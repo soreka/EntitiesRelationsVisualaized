@@ -2,229 +2,242 @@ using Microsoft.Msagl.Drawing;
 using Microsoft.Msagl.GraphViewerGdi;
 using System;
 using System.Data.SqlClient;
+using System.Reflection;
 using System.Windows.Forms;
 using System.Windows.Forms.VisualStyles;
 using Color = Microsoft.Msagl.Drawing.Color;
 
-class Program
+namespace entitiesRelations;
+    
+
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            string connectionString = "Data Source= (localdb)\\myWorkSpace ;Initial Catalog=AdventureWorks2016; User ID=soreka; Password=soreka123";
+
+            // Create and fetch the graph
+            var graph = GraphManager.BuildGraph(connectionString);
+
+            // Setup the UI
+            UIManager.ShowGraph(graph);
+        }
+        }
+    public static class DatabaseManager
+    {
+        public static SqlDataReader ExecuteQuery(string connectionString, string query)
+        {
+            var connection = new SqlConnection(connectionString);
+            connection.Open();
+
+            var command = new SqlCommand(query, connection);
+            return command.ExecuteReader();
+        }
+    }
+    public static class GraphManager
+    {
+        public static Graph BuildGraph(string connectionString)
+        {
+            HashSet<Tuple<string, string>> existingEdges = new HashSet<Tuple<string, string>>();
+            
+            var graph = new Graph("databaseSchema");
+
+            string queryOneToMany = @"
+                  SELECT 
+    fk.name AS ForeignKeyName,
+    tp.name AS ParentTable,
+    tr.name AS ReferencedTable,
+    pc.name AS ParentColumn,
+    rc.name AS ReferencedColumn,
+    CASE
+        WHEN (
+            SELECT COUNT(*) 
+              FROM sys.indexes i
+              INNER JOIN 
+              sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+              WHERE ic.column_id = fkc.parent_column_id AND i.is_unique = 1 AND ic.object_id = tp.object_id) > 0 
+             AND 
+             (SELECT COUNT(*) 
+              FROM sys.indexes i
+              INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+              WHERE ic.column_id = fkc.referenced_column_id AND i.is_unique = 1 AND ic.object_id = tr.object_id) > 0 
+        THEN '1-1'
+        WHEN 
+            (SELECT COUNT(*) 
+             FROM sys.indexes i
+             INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+             WHERE ic.column_id = fkc.parent_column_id AND i.is_unique = 1 AND ic.object_id = tp.object_id) = 0 
+             AND 
+             (SELECT COUNT(*) 
+              FROM sys.indexes i
+              INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+              WHERE ic.column_id = fkc.referenced_column_id AND i.is_unique = 1 AND ic.object_id = tr.object_id) > 0
+        THEN 'many-1'
+        ELSE '1-many'
+    END AS RelationshipType
+
+FROM sys.foreign_keys AS fk
+INNER JOIN sys.foreign_key_columns AS fkc ON fk.object_id = fkc.constraint_object_id
+INNER JOIN sys.tables AS tp ON fk.parent_object_id = tp.object_id
+INNER JOIN sys.tables AS tr ON fk.referenced_object_id = tr.object_id
+INNER JOIN sys.columns AS pc ON tp.object_id = pc.object_id AND pc.column_id = fkc.parent_column_id
+INNER JOIN sys.columns AS rc ON tr.object_id = rc.object_id AND rc.column_id = fkc.referenced_column_id;";
+
+            using (var reader = DatabaseManager.ExecuteQuery(connectionString, queryOneToMany))
+            {
+                while (reader.Read())
+                {
+                    string parentTable = reader["ParentTable"].ToString();
+                    string referencedTable = reader["ReferencedTable"].ToString();
+                    string relationship = reader["RelationshipType"].ToString();
+                    CreateNode(graph, parentTable);
+                    CreateNode(graph, referencedTable);
+                    CreateEdge(graph, existingEdges, parentTable, referencedTable,
+                    relationship);
+                //Edge e = graph.AddEdge(parentTable, referencedTable );
+                    //e.LabelText = relationship;
+                    //e.Label.IsVisible = false;
+                    //e.Label.FontColor = Microsoft.Msagl.Drawing.Color.Red;
+                    //e.Attr.Color = Microsoft.Msagl.Drawing.Color.PowderBlue;
+                    //e.Attr.ArrowheadAtSource = ArrowStyle.Diamond; // Diamond at source for 'consists of'
+                    //e.Attr.ArrowheadAtTarget = ArrowStyle.None;
+                    //e.UserData = relationship;
+                }
+            }
+            string queryManyToMany = @"
+                SELECT
+                    junction.name AS JunctionTable,
+                    tp.name AS ParentTable,
+                    tr.name AS ReferencedTable
+                FROM
+                    sys.foreign_keys AS fk1
+                INNER JOIN
+                    sys.foreign_key_columns AS fkc1 ON fk1.object_id = fkc1.constraint_object_id
+                INNER JOIN
+                    sys.tables AS junction ON fk1.parent_object_id = junction.object_id
+                INNER JOIN
+                    sys.tables AS tp ON fk1.referenced_object_id = tp.object_id
+                INNER JOIN
+                    sys.foreign_keys AS fk2 ON fk2.parent_object_id = junction.object_id AND fk2.object_id != fk1.object_id
+                INNER JOIN
+                    sys.foreign_key_columns AS fkc2 ON fk2.object_id = fkc2.constraint_object_id
+                INNER JOIN
+                    sys.tables AS tr ON fk2.referenced_object_id = tr.object_id;
+              ";
+                using (var reader = DatabaseManager.ExecuteQuery(connectionString, queryManyToMany))
+                {
+                while (reader.Read())
+                {
+                    string parentTable = reader["ParentTable"].ToString();
+                    string referencedTable = reader["ReferencedTable"].ToString();
+                    string relationship = "many-many";
+                    CreateNode(graph, parentTable);
+                    CreateNode(graph, referencedTable);
+                    CreateEdge(graph, existingEdges, parentTable, referencedTable, 
+                        relationship);
+                    //Edge e = graph.AddEdge(parentTable, referencedTable);
+                    //e.Attr.Color = Microsoft.Msagl.Drawing.Color.PowderBlue;
+                    //e.Attr.ArrowheadAtSource = ArrowStyle.Diamond; // Diamond at source for 'consists of'
+                    //e.Attr.ArrowheadAtTarget = ArrowStyle.None;
+                    //e.UserData = relationship;
+                }
+                }
+        return graph;
+
+        }
+    
+        private static  Tuple<string,string>  CreateEdgeKey(string source,string target)
+        {
+            return source.CompareTo(target) < 0 ? Tuple.Create(source, target) : Tuple.Create(target,source);
+        }
+        private static void CreateEdge(Graph graph,HashSet<Tuple<string,string>> existingEdges,
+            string source,string target,string relationship)
+        {
+            
+            var edgeKey = CreateEdgeKey(source,target);
+            if (!existingEdges.Contains(edgeKey)) {
+                Edge e = graph.AddEdge(source, target);
+                existingEdges.Add(edgeKey);
+                e.Attr.Color = Microsoft.Msagl.Drawing.Color.PowderBlue;
+                e.Attr.ArrowheadAtSource = ArrowStyle.Diamond; // Diamond at source for 'consists of'
+                e.Attr.ArrowheadAtTarget = ArrowStyle.None;
+                e.UserData = relationship;
+        }
+        }
+        private static void CreateNode(Graph graph, string data)
+        {
+            var Node = graph.AddNode(data);
+            Node.Attr.FillColor = Microsoft.Msagl.Drawing.Color.CornflowerBlue; // #1f497d
+            Node.Label.FontColor = Microsoft.Msagl.Drawing.Color.Ivory; // #ffffef
+            Node.Attr.Shape = Microsoft.Msagl.Drawing.Shape.Box;
+        }
+        
+
+    }
+
+public static class UIManager
 {
     private static System.Windows.Forms.Label edgeInfoLabel;
 
-    static void Main(string[] args)
+    public static void ShowGraph(Graph graph)
     {
-        
-        string connectionString = "Data Source= (localdb)\\myWorkSpace ;Initial Catalog=coapp; User ID=soreka; Password=soreka123";
-        var graph = new Graph("databaseSchema");
-
-        // Fetch the schema and relationships
-        using (var connection = new SqlConnection(connectionString))
-        {
-            connection.Open();
-
-            //string query = @"
-            //    SELECT 
-            //        fk.name AS ForeignKeyName,
-            //        tp.name AS ParentTable,
-            //        cp.name AS ParentColumn,
-            //        tr.name AS ReferencedTable,
-            //        cr.name AS ReferencedColumn
-            //    FROM 
-            //        sys.foreign_keys AS fk
-            //    INNER JOIN 
-            //        sys.tables AS tp ON fk.parent_object_id = tp.object_id
-            //    INNER JOIN 
-            //        sys.tables AS tr ON fk.referenced_object_id = tr.object_id
-            //    INNER JOIN 
-            //        sys.foreign_key_columns AS fkc ON fkc.constraint_object_id = fk.object_id
-            //    INNER JOIN 
-            //        sys.columns AS cp ON fkc.parent_column_id = cp.column_id AND fkc.parent_object_id = cp.object_id
-            //    INNER JOIN 
-            //        sys.columns AS cr ON fkc.referenced_column_id = cr.column_id AND fkc.referenced_object_id = cr.object_id;
-            //";
-
-            string query = @"
-             SELECT 
-	            fk.name AS ForeignKeyName,
-	            tp.name AS ParentTable,
-	            tr.name AS ReferencedTable,
-	            pc.name AS ParentColumn,
-	            rc.name AS ReferencedColumn,
-                CASE
-                    WHEN (
-			            SELECT COUNT(*) 
-                          FROM sys.indexes i
-                          INNER JOIN 
-			              sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-                          WHERE ic.column_id = fkc.parent_column_id AND i.is_unique = 1 AND ic.object_id = tp.object_id) > 0 
-                         AND 
-                         (SELECT COUNT(*) 
-                          FROM sys.indexes i
-                          INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-                          WHERE ic.column_id = fkc.referenced_column_id AND i.is_unique = 1 AND ic.object_id = tr.object_id) > 0 
-                    THEN tp.name + ' can have only one ' + tr.name
-                    WHEN 
-                        (SELECT COUNT(*) 
-                         FROM sys.indexes i
-                         INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-                         WHERE ic.column_id = fkc.parent_column_id AND i.is_unique = 1 AND ic.object_id = tp.object_id) = 0 
-                         AND 
-                         (SELECT COUNT(*) 
-                          FROM sys.indexes i
-                          INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-                          WHERE ic.column_id = fkc.referenced_column_id AND i.is_unique = 1 AND ic.object_id = tr.object_id) > 0
-                    THEN tp.name + ' is on of many in ' + tr.name
-                    ELSE tp.name + ' can have multiple  ' + tr.name
-                END AS RelationshipType
-
-                From sys.foreign_keys AS fk
-                INNER JOIN
-                sys.foreign_key_columns AS fkc ON fk.object_id = fkc.constraint_object_id
-                INNER JOIN 
-                sys.tables AS tp ON  fk.parent_object_id = tp.object_id
-                INNER JOIN
-                sys.tables AS tr ON fk.referenced_object_id = tr.object_id
-                INNER JOIN 
-                sys.columns AS pc ON tp.object_id = pc.object_id AND pc.column_id = fkc.parent_column_id
-                INNER JOIN
-                sys.columns AS rc ON tr.object_id = rc.object_id AND rc.column_id = fkc.parent_column_id
-
-
-             ";
-
-            using (var command = new SqlCommand(query, connection))
-            {
-                using (var reader = command.ExecuteReader())
-                {
-                    while (reader.Read())
-                    {
-                        string parentTable = reader["ParentTable"].ToString();
-                        string referencedTable = reader["ReferencedTable"].ToString();
-                        string relationship = reader["RelationshipType"].ToString();
-                        graph.AddNode(parentTable);
-                        graph.AddNode(referencedTable);
-                        Edge e = graph.AddEdge(parentTable, referencedTable);
-                        e.LabelText = relationship;
-                        e.Label.FontColor = Color.Red;
-                        e.Attr.ArrowheadAtTarget = ArrowStyle.Normal;
-                        //e.LabelText = relationship;
-                    }
-                }
-            }
-        }
-
-        // Render the graph
         var viewer = new GViewer { Graph = graph };
         viewer.Dock = DockStyle.Fill;
-        viewer.MouseMove += (sender, e) =>
+        viewer.MouseMove += new MouseEventHandler(gViewer_MouseMove);
+
+        var form = new Form
         {
-            var obj = viewer.ObjectUnderMouseCursor;
-
-            if (obj is Microsoft.Msagl.Core.Layout.Edge dedge)
-            {
-                // Find the corresponding graphical edge
-                Edge edge = null;
-                foreach (var gEdge in viewer.Graph.Edges)
-                {
-                    if ((gEdge.SourceNode.Id == dedge.SourceNode.Id && gEdge.TargetNode.Id == dedge.TargetNode.Id) ||
-                        (gEdge.SourceNode.Id == dedge.TargetNode.Id && gEdge.TargetNode.Id == dedge.SourceNode.Id))
-                    {
-                        edge = gEdge;
-                        break;
-                    }
-                }
-
-                if (edge != null)
-                {
-                    // Change color or other properties to indicate hover
-                    edge.Attr.Color = Microsoft.Msagl.Drawing.Color.Blue;
-
-                    // Optionally, change the thickness or other attributes
-                    edge.Attr.LineWidth = 3.0;
-
-                    // Refresh the viewer to apply changes
-                    viewer.Invalidate();
-                }
-            }
-            else
-            {
-                // Reset all edges to their default state when not hovering
-                foreach (var gEdge in viewer.Graph.Edges)
-                {
-                    gEdge.Attr.Color = Microsoft.Msagl.Drawing.Color.Black; // Or whatever the default color is
-                    gEdge.Attr.LineWidth = 1.0;
-                }
-
-                viewer.Invalidate();
-            }
+            Text = "Database Schema Visualization",
+            WindowState = FormWindowState.Maximized
         };
-        //viewer.Click += (sender, e) =>
+
+        edgeInfoLabel = new System.Windows.Forms.Label
+        {
+            AutoSize = true,
+            BackColor = System.Drawing.Color.AntiqueWhite,
+            ForeColor = System.Drawing.Color.CornflowerBlue,
+            //BorderStyle = BorderStyle.FixedSingle,
+            BorderStyle = BorderStyle.None,
+            Padding = new Padding(5),
+            Font = new System.Drawing.Font("Arial", 10, System.Drawing.FontStyle.Bold),
+            Visible = false
+        };
+
+        form.Controls.Add(edgeInfoLabel);
+        form.Controls.Add(viewer);
+
+        Application.Run(form);
+    }
+
+    private static void gViewer_MouseMove(object sender, MouseEventArgs e)
+    {
+        GViewer viewer = sender as GViewer;
+        var objectUnderMouseCursor = viewer.GetObjectAt(e.Location);
+
+        if (objectUnderMouseCursor is DNode node1)
+        {
+            Microsoft.Msagl.Drawing.Node drawingNode = node1.DrawingNode;
+        }
+
+        //if (objectUnderMouseCursor is DNode node)
         //{
-        //    var obj = viewer.ObjectUnderMouseCursor;
-
-        //    if (obj == null)
-        //    {
-        //        MessageBox.Show("No object detected under the mouse cursor.");
-        //    }
-        //    else if (obj is DEdge edge)
-        //    {
-
-        //        //MessageBox.Show($"Edge {edge.Source} -> {edge.Target} clicked");
-        //        //// Toggle edge color
-        //        //edge.Attr.Color = edge.Attr.Color == Microsoft.Msagl.Drawing.Color.Red
-        //        //    ? Microsoft.Msagl.Drawing.Color.Black
-        //        //    : Microsoft.Msagl.Drawing.Color.Red;
-
-        //        //// Toggle label visibility
-        //        //edge.Label.FontColor = edge.Label.FontColor == Color.Transparent
-        //        //    ? Color.Black
-        //        //    : Color.Transparent;
-
-        //        // Refresh the viewer to apply changes
-        //        viewer.Invalidate();
-        //    }
-        //    else if (obj is Node node)
-        //    {
-        //        MessageBox.Show($"Node {node.LabelText} clicked");
-        //    }
-        //    else
-        //    {
-        //        MessageBox.Show($"Detected an object of type: {obj.GetType().Name}");
-        //    }
-        //};
-
-        //        // Create a Windows Forms form to show the graph
-        //        var form = new Form
-        //        {
-        //            Text = "Database Schema Visualization",
-        //            WindowState = FormWindowState.Maximized
-        //        };
-
-        //        // Create the Label control to display edge information
-        //        edgeInfoLabel = new System.Windows.Forms.Label
-        //        {
-        //            AutoSize = true,
-        //            BackColor = System.Drawing.Color.LightYellow,
-        //            BorderStyle = BorderStyle.FixedSingle,
-        //            Visible = false
-        //        };
-        //        form.Controls.Add(edgeInfoLabel);
-
-        //        form.Controls.Add(viewer);
-
-        //        Application.Run(form);
+        //    MessageBox.Show($"{node.GetType().Name}");
         //}
 
-        //    private static void GraphNode_Click(object sender, EventArgs e)
-        //    {
-        //        GViewer viewer = sender as GViewer;
+       
+        if (objectUnderMouseCursor is DEdge edge)
+        {
 
-        //        if (viewer.SelectedObject is Edge edge)
-        //        {
-        //            var mousePosition = viewer.PointToClient(Control.MousePosition);
+            Microsoft.Msagl.Drawing.Edge drawingEdge = edge.DrawingEdge;
+            edgeInfoLabel.Text = drawingEdge.UserData.ToString();
+            edgeInfoLabel.Location = e.Location;
+            edgeInfoLabel.Visible = true;
 
-        //            edgeInfoLabel.Text = edge.LabelText ?? "Edge Clicked";
-        //            edgeInfoLabel.Location = mousePosition;
-        //            edgeInfoLabel.Visible = true;
-        //        }
-        //    }
+        }
+        else
+        {
+            edgeInfoLabel.Visible = false;
+        }
     }
+}
+
