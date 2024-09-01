@@ -1,6 +1,6 @@
-Apologies for the confusion. Here is the entire README content without breaking it into different formats or parts, all in one go:
 
-```markdown
+
+
 # Database Schema Visualization Tool
 
 ## Overview
